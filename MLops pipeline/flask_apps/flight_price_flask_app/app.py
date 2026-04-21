@@ -17,10 +17,20 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from flask_apps.common import DATASET_DIR, JOBLIB_DIR, dataframe_to_records, load_csv_file, load_joblib_file, read_request_data
+from flask_apps.common import (
+    DATASET_DIR,
+    JOBLIB_DIR,
+    build_health_response,
+    dataframe_to_records,
+    load_csv_file,
+    load_joblib_file,
+    read_request_data,
+    register_error_handlers,
+)
 
 
 app = Flask(__name__, template_folder="templates")
+register_error_handlers(app, "Flight Price Flask API")
 
 # Keep the Flask service aligned with the artifact locations used by training and Streamlit.
 MODEL_PATH = JOBLIB_DIR / "flight_price_model.joblib"
@@ -102,6 +112,40 @@ def build_prediction_input(
     )
 
     return input_df
+
+
+def validate_city(city_name, city_options, label):
+    # Invalid cities should be rejected clearly instead of falling back to an all-zero route.
+    if city_name not in city_options:
+        valid_cities = ", ".join(city_options)
+        raise ValueError(f"{label} must be one of: {valid_cities}")
+
+
+def validate_flight_inputs(
+    assets,
+    departure_city,
+    arrival_city,
+    flight_type,
+    agency,
+    travel_time=None,
+):
+    # Validate every request field before the model receives it.
+    validate_city(departure_city, assets["city_options"], "departure_city")
+    validate_city(arrival_city, assets["city_options"], "arrival_city")
+
+    if departure_city == arrival_city:
+        raise ValueError("departure_city and arrival_city must be different.")
+
+    if flight_type not in assets["flight_type_options"]:
+        valid_types = ", ".join(assets["flight_type_options"])
+        raise ValueError(f"flight_type must be one of: {valid_types}")
+
+    if agency not in assets["agency_options"]:
+        valid_agencies = ", ".join(assets["agency_options"])
+        raise ValueError(f"agency must be one of: {valid_agencies}")
+
+    if travel_time is not None and travel_time <= 0:
+        raise ValueError("travel_time must be greater than 0.")
 
 
 def build_route_summary(flights_df):
@@ -327,7 +371,7 @@ def api_overview():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "app_name": "Flight Price Flask API"})
+    return build_health_response("Flight Price Flask API", load_flight_assets)
 
 
 @app.get("/model-info")
@@ -378,6 +422,19 @@ def route_summary():
     if not departure_city or not arrival_city or not flight_type:
         return jsonify({"error": "Please provide departure_city, arrival_city, and flight_type."}), 400
 
+    try:
+        validate_city(departure_city, assets["city_options"], "departure_city")
+        validate_city(arrival_city, assets["city_options"], "arrival_city")
+
+        if departure_city == arrival_city:
+            raise ValueError("departure_city and arrival_city must be different.")
+
+        if flight_type not in assets["flight_type_options"]:
+            valid_types = ", ".join(assets["flight_type_options"])
+            raise ValueError(f"flight_type must be one of: {valid_types}")
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
     selected_route_df = assets["route_summary_df"][
         (assets["route_summary_df"]["from"] == departure_city)
         & (assets["route_summary_df"]["to"] == arrival_city)
@@ -427,6 +484,18 @@ def predict():
 
     except (TypeError, ValueError):
         return jsonify({"error": "Please provide travel_time as a numeric value."}), 400
+
+    try:
+        validate_flight_inputs(
+            assets=assets,
+            departure_city=departure_city,
+            arrival_city=arrival_city,
+            flight_type=flight_type,
+            agency=agency,
+            travel_time=travel_time,
+        )
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
 
     prediction_input_df = build_prediction_input(
         departure_city=departure_city,

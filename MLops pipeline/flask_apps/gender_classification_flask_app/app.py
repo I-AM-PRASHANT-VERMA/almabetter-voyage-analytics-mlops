@@ -15,10 +15,21 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from flask_apps.common import DATASET_DIR, JOBLIB_DIR, dataframe_to_records, load_csv_file, load_joblib_file, read_positive_int, read_request_data
+from flask_apps.common import (
+    DATASET_DIR,
+    JOBLIB_DIR,
+    build_health_response,
+    dataframe_to_records,
+    load_csv_file,
+    load_joblib_file,
+    read_positive_int,
+    read_request_data,
+    register_error_handlers,
+)
 
 
 app = Flask(__name__, template_folder="templates")
+register_error_handlers(app, "Gender Classification Flask API")
 
 # Keep the Flask app pointed at the shared classifier artifact and source data.
 MODEL_PATH = JOBLIB_DIR / "gender_classifier_best_model.joblib"
@@ -173,7 +184,7 @@ def api_overview():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "app_name": "Gender Classification Flask API"})
+    return build_health_response("Gender Classification Flask API", load_gender_assets)
 
 
 @app.get("/dataset-summary")

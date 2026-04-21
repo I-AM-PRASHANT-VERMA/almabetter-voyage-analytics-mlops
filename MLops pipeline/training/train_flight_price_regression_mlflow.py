@@ -82,6 +82,16 @@ DEFAULT_MODEL_PARAMS = {
     "random_state": 42,
 }
 
+REQUIRED_DATA_COLUMNS = [
+    "date",
+    "time",
+    "price",
+    "from",
+    "to",
+    "flightType",
+    "agency",
+]
+
 
 # Build a local file-based tracking URI from the repo path.
 def build_tracking_uri(tracking_dir):
@@ -154,7 +164,26 @@ def ensure_local_experiment_artifact_path(experiment_name, tracking_dir):
 
 # Read the source dataset used by the flight regression workflow.
 def load_regression_data():
-    return pd.read_csv(DATA_PATH)
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(f"Dataset not found: {DATA_PATH}")
+
+    if DATA_PATH.stat().st_size == 0:
+        raise ValueError(f"Dataset is empty: {DATA_PATH}")
+
+    flights_df = pd.read_csv(DATA_PATH)
+
+    missing_columns = [
+        column_name
+        for column_name in REQUIRED_DATA_COLUMNS
+        if column_name not in flights_df.columns
+    ]
+
+    if missing_columns:
+        raise ValueError(
+            f"Dataset is missing required columns: {missing_columns}"
+        )
+
+    return flights_df
 
 
 # Rebuild the same feature frame layout used by the current saved model.
@@ -238,6 +267,9 @@ def log_json_artifact(data, staging_dir, file_name, artifact_path):
 
 # End-to-end training flow for the flight regression model.
 def run_training(args):
+    if not 0 < args.test_size < 1:
+        raise ValueError("--test-size must be greater than 0 and less than 1.")
+
     # Local temp folders are kept inside the repo because MLflow artifact
     # logging is more predictable on Windows when it stays off the system temp.
     local_temp_dir = LOCAL_MLFLOW_TEMP_DIR / "tmp"
@@ -455,5 +487,8 @@ def parse_args():
 # Direct script entrypoint for local runs.
 if __name__ == "__main__":
     parsed_args = parse_args()
-
-    run_training(parsed_args)
+    try:
+        run_training(parsed_args)
+    except Exception as error:
+        print(f"Training failed: {error}")
+        raise

@@ -15,10 +15,21 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from flask_apps.common import DATASET_DIR, JOBLIB_DIR, dataframe_to_records, load_csv_file, load_joblib_file, read_positive_int, read_request_data
+from flask_apps.common import (
+    DATASET_DIR,
+    JOBLIB_DIR,
+    build_health_response,
+    dataframe_to_records,
+    load_csv_file,
+    load_joblib_file,
+    read_positive_int,
+    read_request_data,
+    register_error_handlers,
+)
 
 
 app = Flask(__name__, template_folder="templates")
+register_error_handlers(app, "Hotel Recommendation Flask API")
 
 # Keep the hotel app aligned with the shared recommender bundle and hotel dataset.
 MODEL_PATH = JOBLIB_DIR / "hotel_recommender_simple.joblib"
@@ -329,7 +340,7 @@ def api_overview():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "app_name": "Hotel Recommendation Flask API"})
+    return build_health_response("Hotel Recommendation Flask API", load_hotel_assets)
 
 
 @app.get("/popular-hotels")

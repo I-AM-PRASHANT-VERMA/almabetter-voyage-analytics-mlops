@@ -56,12 +56,18 @@ MODEL_FEATURE_COLUMNS = [
 @st.cache_resource
 def load_model():
     # Model loading is cached once so a rerun does not hit disk again.
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(f"Model artifact was not found: {MODEL_PATH}")
+
     return joblib.load(MODEL_PATH)
 
 
 @st.cache_data
 def load_flights_data():
     # The source CSV is static for the session, so cache it with the rest of the page state.
+    if not FLIGHTS_DATA_PATH.exists():
+        raise FileNotFoundError(f"Dataset file was not found: {FLIGHTS_DATA_PATH}")
+
     return pd.read_csv(FLIGHTS_DATA_PATH)
 
 
@@ -112,7 +118,20 @@ def predict_with_api(
         timeout=30,
     )
 
-    response.raise_for_status()
+    if not response.ok:
+        try:
+            error_payload = response.json()
+        except ValueError:
+            error_payload = {}
+
+        error_message = error_payload.get("error") or error_payload.get("message")
+
+        if not error_message:
+            error_message = (
+                f"Prediction request failed with status {response.status_code}."
+            )
+
+        raise RuntimeError(error_message)
 
     return response.json()
 
@@ -509,50 +528,60 @@ def build_route_summary(flights_df):
 
 
 # Load and derive the base dashboard data once before the layout is rendered.
-flights_df = load_flights_data()
+try:
+    flights_df = load_flights_data()
 
-route_summary_df = build_route_summary(flights_df)
+    route_summary_df = build_route_summary(flights_df)
 
-# Keep form options tied directly to the source dataset so dropdowns and summaries stay consistent.
-city_options = sorted(flights_df["from"].dropna().unique())
+    # Keep form options tied directly to the source dataset so dropdowns and summaries stay consistent.
+    city_options = sorted(flights_df["from"].dropna().unique())
 
-flight_type_options = sorted(flights_df["flightType"].dropna().unique())
+    flight_type_options = sorted(flights_df["flightType"].dropna().unique())
 
-agency_options = sorted(flights_df["agency"].dropna().unique())
+    agency_options = sorted(flights_df["agency"].dropna().unique())
 
-dataset_min_date = pd.to_datetime(flights_df["date"]).min().date()
+    dataset_min_date = pd.to_datetime(flights_df["date"]).min().date()
 
-dataset_max_date = pd.to_datetime(flights_df["date"]).max().date()
+    dataset_max_date = pd.to_datetime(flights_df["date"]).max().date()
 
-route_count = flights_df[["from", "to"]].drop_duplicates().shape[0]
+    route_count = flights_df[["from", "to"]].drop_duplicates().shape[0]
 
-average_price = float(flights_df["price"].mean())
+    average_price = float(flights_df["price"].mean())
 
-agency_count = flights_df["agency"].nunique()
+    agency_count = flights_df["agency"].nunique()
 
-top_route_prices_df = (
-    route_summary_df.groupby(["from", "to"], as_index=False)
-    .agg(avg_price=("avg_price", "mean"))
-    .sort_values(by="avg_price", ascending=False)
-)
-
-top_route_prices_df["route"] = (
-    top_route_prices_df["from"] + " -> " + top_route_prices_df["to"]
-)
-
-agency_summary_df = (
-    flights_df.groupby("agency", as_index=False)
-    .agg(
-        avg_price=("price", "mean"),
-        avg_time=("time", "mean"),
-        trip_count=("travelCode", "count"),
+    top_route_prices_df = (
+        route_summary_df.groupby(["from", "to"], as_index=False)
+        .agg(avg_price=("avg_price", "mean"))
+        .sort_values(by="avg_price", ascending=False)
     )
-    .sort_values(by="avg_price", ascending=False)
-)
 
-agency_summary_df["avg_price"] = agency_summary_df["avg_price"].round(2)
+    top_route_prices_df["route"] = (
+        top_route_prices_df["from"] + " -> " + top_route_prices_df["to"]
+    )
 
-agency_summary_df["avg_time"] = agency_summary_df["avg_time"].round(2)
+    agency_summary_df = (
+        flights_df.groupby("agency", as_index=False)
+        .agg(
+            avg_price=("price", "mean"),
+            avg_time=("time", "mean"),
+            trip_count=("travelCode", "count"),
+        )
+        .sort_values(by="avg_price", ascending=False)
+    )
+
+    agency_summary_df["avg_price"] = agency_summary_df["avg_price"].round(2)
+
+    agency_summary_df["avg_time"] = agency_summary_df["avg_time"].round(2)
+except FileNotFoundError as error:
+    st.error("The flight dashboard could not start because a required runtime file is missing.")
+    st.code(str(error))
+    st.stop()
+except Exception as error:
+    st.error("The flight dashboard could not finish loading the dataset and summary views.")
+    with st.expander("Open startup details", expanded=False):
+        st.write(str(error))
+    st.stop()
 
 # Apply the saved theme before any visible layout is drawn.
 selected_theme = get_selected_theme()
@@ -716,6 +745,18 @@ if submitted:
             str(error),
         )
 
+    except RuntimeError as error:
+        st.session_state.flight_prediction_error_v3 = (
+            "The Flask API rejected the prediction request.",
+            str(error),
+        )
+
+    except FileNotFoundError as error:
+        st.session_state.flight_prediction_error_v3 = (
+            "The saved model file is not available in this runtime.",
+            str(error),
+        )
+
     except Exception as error:
         st.session_state.flight_prediction_error_v3 = (
             "The app could not generate a prediction from the saved model.",
@@ -859,298 +900,3 @@ with data_tab:
         hide_index=True,
     )
 
-st.stop()
-raise SystemExit
-
-with hero_col:
-    st.markdown(
-        """
-        <div class="hero-card">
-            <div class="hero-badge">Flight ML App</div>
-            <div class="hero-title">Flight Price Prediction</div>
-            <div class="hero-copy">
-                Estimate airfare from route, cabin type, agency, date, and journey time using your saved machine learning model.
-                The app also includes route and agency summaries from the dataset.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with theme_col:
-    selected_theme = st.radio(
-        "Theme",
-        options=["System", "Light", "Dark"],
-        index=["System", "Light", "Dark"].index(selected_theme),
-        horizontal=False,
-    )
-
-    st.session_state.flight_theme_mode_v2 = selected_theme
-
-apply_theme_css(selected_theme)
-
-metric_col_1, metric_col_2, metric_col_3, metric_col_4 = st.columns(4, gap="large")
-
-metric_col_1.metric("Flight Records", f"{len(flights_df):,}")
-
-metric_col_2.metric("Distinct Routes", f"{route_count:,}")
-
-metric_col_3.metric("Average Ticket Price", format_currency(average_price))
-
-metric_col_4.metric("Agencies", f"{agency_count}")
-
-predict_tab, insights_tab, data_tab = st.tabs(
-    ["Prediction Workspace", "Market Insights", "Dataset Explorer"]
-)
-
-with predict_tab:
-    form_col, result_col = st.columns([1.15, 0.85], gap="large")
-
-    with form_col:
-        st.markdown(
-            """
-            <div class="panel-card">
-                <div class="section-label">Build A Fare Estimate</div>
-                <div class="section-copy">Choose the trip details below and submit the form to generate a predicted ticket price.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        with st.form("flight_prediction_form_v2", border=False):
-            city_col_1, city_col_2 = st.columns(2)
-
-            with city_col_1:
-                departure_city = st.selectbox(
-                    "Departure city",
-                    options=city_options,
-                    index=0,
-                )
-
-            with city_col_2:
-                arrival_options = [city for city in city_options if city != departure_city]
-
-                arrival_city = st.selectbox(
-                    "Arrival city",
-                    options=arrival_options,
-                    index=0,
-                )
-
-            detail_col_1, detail_col_2 = st.columns(2)
-
-            with detail_col_1:
-                flight_type = st.selectbox(
-                    "Cabin type",
-                    options=flight_type_options,
-                    index=0,
-                )
-
-            with detail_col_2:
-                agency = st.selectbox(
-                    "Agency",
-                    options=agency_options,
-                    index=0,
-                )
-
-            travel_col_1, travel_col_2 = st.columns(2)
-
-            with travel_col_1:
-                travel_date = st.date_input(
-                    "Travel date",
-                    value=dataset_min_date,
-                    min_value=dataset_min_date,
-                    max_value=dataset_max_date,
-                )
-
-            with travel_col_2:
-                travel_time = st.slider(
-                    "Travel time in hours",
-                    min_value=float(flights_df["time"].min()),
-                    max_value=float(flights_df["time"].max()),
-                    value=float(round(flights_df["time"].median(), 2)),
-                    step=0.01,
-                )
-
-            submitted = st.form_submit_button("Predict Ticket Price", use_container_width=True)
-
-    with result_col:
-        st.markdown(
-            """
-            <div class="panel-card">
-                <div class="section-label">Prediction Result</div>
-                <div class="section-copy">This panel shows the predicted fare and the historical context for the selected route.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        selected_route_df = route_summary_df[
-            (route_summary_df["from"] == departure_city)
-            & (route_summary_df["to"] == arrival_city)
-            & (route_summary_df["flightType"] == flight_type)
-        ]
-
-        if submitted:
-            try:
-                model = load_model()
-
-                prediction_input_df = build_prediction_input(
-                    departure_city=departure_city,
-                    arrival_city=arrival_city,
-                    flight_type=flight_type,
-                    agency=agency,
-                    travel_date=travel_date,
-                    travel_time=travel_time,
-                )
-
-                predicted_price = float(model.predict(prediction_input_df)[0])
-
-                st.session_state.flight_predicted_price_v2 = predicted_price
-
-                st.session_state.flight_input_preview_v2 = prediction_input_df
-
-            except ModuleNotFoundError as error:
-                st.error(
-                    "Prediction could not start because the `xgboost` package is not installed."
-                )
-
-                st.code("pip install xgboost")
-
-                st.caption(f"Missing module: {error}")
-
-            except Exception as error:
-                st.error("The app could not generate a prediction from the saved model.")
-
-                with st.expander("Open error details", expanded=False):
-                    st.write(str(error))
-
-        predicted_price = st.session_state.get("flight_predicted_price_v2")
-
-        if predicted_price is not None:
-            price_difference = predicted_price - average_price
-
-            st.markdown(
-                f"""
-                <div class="result-shell">
-                    <div class="result-kicker">Estimated Fare</div>
-                    <div class="result-price">{format_currency(predicted_price)}</div>
-                    <div class="result-note">
-                        Difference from overall dataset average: {format_currency(price_difference)}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        else:
-            st.markdown(
-                """
-                <div class="result-shell">
-                    <div class="result-kicker">Estimated Fare</div>
-                    <div class="result-price">Ready To Predict</div>
-                    <div class="result-note">
-                        Submit the trip details from the form to generate a model-based fare estimate.
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        if not selected_route_df.empty:
-            selected_route_row = selected_route_df.iloc[0]
-
-            st.markdown(
-                f"""
-                <div class="subtle-grid" style="margin-top: 1rem;">
-                    {render_stat_card("Historical Avg Price", format_currency(float(selected_route_row["avg_price"])))}
-                    {render_stat_card("Average Time", f"{selected_route_row['avg_time']:.2f} hours")}
-                    {render_stat_card("Average Distance", f"{selected_route_row['avg_distance']:.2f} km")}
-                    {render_stat_card("Observed Trips", f"{int(selected_route_row['trip_count'])}")}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        if "flight_input_preview_v2" in st.session_state:
-            with st.expander("View model input row", expanded=False):
-                st.dataframe(
-                    st.session_state.flight_input_preview_v2,
-                    width="stretch",
-                    hide_index=True,
-                )
-
-with insights_tab:
-    insight_col_1, insight_col_2 = st.columns([1.1, 0.9], gap="large")
-
-    with insight_col_1:
-        st.markdown(
-            """
-            <div class="panel-card">
-                <div class="section-label">Route Pricing Landscape</div>
-                <div class="section-copy">These routes show the highest average prices based on the historical flight dataset.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.bar_chart(
-            top_route_prices_df.head(10).set_index("route")["avg_price"],
-            height=420,
-        )
-
-    with insight_col_2:
-        st.markdown(
-            """
-            <div class="panel-card">
-                <div class="section-label">Agency Summary</div>
-                <div class="section-copy">Average ticket price, mean journey time, and trip counts by agency.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.dataframe(
-            agency_summary_df,
-            width="stretch",
-            hide_index=True,
-        )
-
-        st.markdown(
-            """
-            <div class="panel-card" style="margin-top: 1rem;">
-                <div class="section-label">Top Route Table</div>
-                <div class="section-copy">A detailed table for the highest average price routes.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.dataframe(
-            top_route_prices_df.head(10)[["route", "avg_price"]],
-            width="stretch",
-            hide_index=True,
-        )
-
-with data_tab:
-    st.markdown(
-        """
-        <div class="panel-card">
-            <div class="section-label">Source Dataset Preview</div>
-            <div class="section-copy">Inspect the flight records used to understand price behavior and build the prediction features.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    preview_rows = st.slider(
-        "Rows to preview",
-        min_value=5,
-        max_value=30,
-        value=12,
-    )
-
-    st.dataframe(
-        flights_df.head(preview_rows),
-        width="stretch",
-        hide_index=True,
-    )
