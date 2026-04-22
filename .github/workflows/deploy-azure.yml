@@ -20,6 +20,7 @@ env:
   ACR_LOGIN_SERVER: acrvoyagemlopspr01.azurecr.io
   CONTAINER_APPS_ENV: cae-voyage-mlops-dev
   AKS_NAME: aks-voyage-mlops-dev
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   WORKDIR: MLops pipeline
 
 jobs:
@@ -28,7 +29,7 @@ jobs:
 
     steps:
       - name: Check out repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Azure login
         uses: azure/login@v2
